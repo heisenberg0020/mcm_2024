@@ -343,15 +343,17 @@ def create_baseline_model():
     # 定义技术特征（不包含任何滞后/状态特征）
     technical_features = [
         # 比分状态
-        'is_p1_serving',
-        'second_serve',
-        'point_diff_in_game',
-        'game_point_p1',
-        'game_point_p2',
-        'deuce_flag',
-        'p1_sets', 'p2_sets',
-        'p1_games', 'p2_games',
-        'p1_point_share',  # 累计统计，但通常是技术能力的反映
+        'p1_sets', 'p2_sets', 'p1_games', 'p2_games',
+        'point_diff_in_game', 'game_point_p1', 'game_point_p2', 'deuce_flag',
+        
+        # 发球状态
+        'is_p1_serving', 'second_serve',
+        
+        # 累计统计数据
+        'p1_point_share',
+        
+        # 回合特征
+        'rally_count',
     ]
     
     # 添加物理特征（如果可用）
@@ -511,6 +513,36 @@ n_points = len(df)
 n_exceed = int(exceed_percent / 100 * n_points)
 expected_exceed = int(0.05 * n_points)  # 期望5%超出
 
+from scipy.stats import binomtest
+p_value = binomtest(n_exceed, n_points, p=0.05, alternative='greater').pvalue
+print(f"单侧检验p值: {p_value:.6f}")
+
+# 判断显著性
+if n_exceed > expected_exceed and p_value < 0.05:
+    print("→ 结果统计显著 (p < 0.05): 拒绝零假设，momentum存在")
+    
+    if p_value < 0.01:
+        significance = "高度显著"
+        print(f"→ {significance} (p < 0.01): 强烈证据表明存在非随机的表现波动")
+    elif p_value < 0.05:
+        significance = "显著"
+        print(f"→ {significance} (p < 0.05): 有证据表明存在momentum效应")
+    
+    print(f"→ 超出比例{exceed_percent:.1f}%显著高于随机期望的5%")
+    
+elif n_exceed < expected_exceed:
+    print(f"→ 超出点数({n_exceed})少于期望({expected_exceed})")
+    print(f"→ 真实比赛波动比随机模拟更小，没有检测到异常波动")
+    print(f"→ 对于这场比赛，没有证据表明存在momentum效应")
+    
+else:  # n_exceed >= expected_exceed但p值不显著
+    if n_exceed == expected_exceed:
+        print(f"→ 超出点数恰好等于期望值")
+    else:
+        print(f"→ 超出点数({n_exceed})略多于期望({expected_exceed})但统计不显著")
+    print("→ 无法拒绝零假设: 比赛波动可能只是随机因素和技术轮转的结果")
+    print("→ 没有足够的统计证据表明存在momentum效应")
+"""
 # 二项检验
 p_value = binomtest(n_exceed, n_points, p=0.05).pvalue
 print(f"超出点数: {n_exceed}/{n_points} (期望: {expected_exceed})")
@@ -522,7 +554,7 @@ if p_value < 0.05:
     print(f"→ {significance_level}: 比赛中的表现波动不是随机的")
 else:
     print("→ 结果不显著: 无法拒绝零假设，可能只是随机波动")
-
+"""
 # 9. 可视化结果
 print("步骤9: 生成可视化...")
 
