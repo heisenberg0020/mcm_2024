@@ -58,7 +58,7 @@ print("步骤1: 加载和预处理数据...")
 
 # 选择一场比赛进行分析（示例：Alcaraz vs Jarry）
 df = pd.read_csv('2024_Wimbledon_featured_matches.csv')
-df =df[(df['player1'] == 'Andrey Rublev') & (df['player2'] == 'David Goffin')].copy()
+df =df[(df['player1'] == 'Carlos Alcaraz') & (df['player2'] == 'Nicolas Jarry')].copy()
 
 # 2. 数据清洗和特征工程
 print("步骤2: 特征工程...")
@@ -226,7 +226,7 @@ if len(df) > 100:
     # 训练模型
     rf_model = RandomForestClassifier(
         n_estimators=200,
-        max_depth=10,
+        max_depth=20,
         min_samples_split=4,
         min_samples_leaf=2,
         random_state=42,
@@ -258,7 +258,7 @@ print("步骤6: 计算比赛流指标...")
 df['residual'] = df['target'] - df['pred_prob']
 
 # 计算EWMA（指数加权移动平均）
-def compute_ewma(series, df, alpha_normal=0.15, alpha_critical=0.3, critical_columns=['is_break_point', 'is_set_point', 'is_match_point']):
+def compute_ewma(series, df, alpha_normal=0.1, alpha_critical=0.4, critical_columns=['is_break_point', 'is_set_point', 'is_match_point']):
     ewma = np.zeros_like(series, dtype=float)
     ewma[0] = series[0]
     
@@ -271,13 +271,20 @@ def compute_ewma(series, df, alpha_normal=0.15, alpha_critical=0.3, critical_col
                 break
         
         # 根据是否为关键分选择alpha
-        alpha = alpha_critical if is_critical else alpha_normal
+        if col  == 'is_break_point' and is_critical:
+            alpha = 0.3
+        elif col == 'is_set_point' and is_critical:
+            alpha = 0.4
+        elif col == 'is_match_point' and is_critical:
+            alpha = 0.5
+        else:
+            alpha = alpha_normal
         
         ewma[i] = (1 - alpha) * ewma[i-1] + alpha * series[i]
     
     return ewma
 
-df['momentum'] = compute_ewma(df['residual'].values, df, alpha_normal=0.15,alpha_critical=0.3,critical_columns=['is_break_point', 'is_set_point','is_match_point'])
+df['momentum'] = compute_ewma(df['residual'].values, df, alpha_normal=0.1,alpha_critical=0.4,critical_columns=['is_break_point', 'is_set_point','is_match_point'])
 
 # 7. 变量分布拟合
 print("步骤7: 拟合变量分布...")
@@ -343,16 +350,19 @@ def create_baseline_model():
     # 定义技术特征（不包含任何滞后/状态特征）
     technical_features = [
         # 比分状态
-        'is_p1_serving',
-        'second_serve',
-        'point_diff_in_game',
-        'game_point_p1',
-        'game_point_p2',
-        'deuce_flag',
-        'p1_sets', 'p2_sets',
-        'p1_games', 'p2_games',
-        'p1_point_share',  # 累计统计，但通常是技术能力的反映
-    ]
+        'p1_games', 'p2_games','p1_sets', 'p2_sets', 'p1_games', 'p2_games',
+        'point_diff_in_game', 'game_point_p1', 'game_point_p2', 'deuce_flag',
+        
+        # 发球状态
+        'is_p1_serving', 'second_serve',
+        
+        # 累计统计数据
+        'p1_point_share',
+        
+        # 回合特征
+        'rally_count',
+
+    ] # 累计统计，但通常是技术能力的反映]
     
     # 添加物理特征（如果可用）
     if 'speed_mph' in df.columns:
@@ -448,8 +458,8 @@ def simulate_match_baseline(num_simulations=200):
         # 计算模拟的momentum
         momentum_sims[sim, :] = compute_ewma(
             sim_residuals, df, 
-            alpha_normal=0.15, 
-            alpha_critical=0.15,
+            alpha_normal=0.1, 
+            alpha_critical=0.4,
             critical_columns=['is_break_point', 'is_set_point', 'is_match_point']
         )
         
@@ -500,6 +510,36 @@ n_points = len(df)
 n_exceed = int(exceed_percent / 100 * n_points)
 expected_exceed = int(0.05 * n_points)  # 期望5%超出
 
+from scipy.stats import binomtest
+p_value = binomtest(n_exceed, n_points, p=0.05, alternative='greater').pvalue
+print(f"单侧检验p值: {p_value:.6f}")
+
+# 判断显著性
+if n_exceed > expected_exceed and p_value < 0.05:
+    print("→ 结果统计显著 (p < 0.05): 拒绝零假设，momentum存在")
+    
+    if p_value < 0.01:
+        significance = "高度显著"
+        print(f"→ {significance} (p < 0.01): 强烈证据表明存在非随机的表现波动")
+    elif p_value < 0.05:
+        significance = "显著"
+        print(f"→ {significance} (p < 0.05): 有证据表明存在momentum效应")
+    
+    print(f"→ 超出比例{exceed_percent:.1f}%显著高于随机期望的5%")
+    
+elif n_exceed < expected_exceed:
+    print(f"→ 超出点数({n_exceed})少于期望({expected_exceed})")
+    print(f"→ 真实比赛波动比随机模拟更小，没有检测到异常波动")
+    print(f"→ 对于这场比赛，没有证据表明存在momentum效应")
+    
+else:  # n_exceed >= expected_exceed但p值不显著
+    if n_exceed == expected_exceed:
+        print(f"→ 超出点数恰好等于期望值")
+    else:
+        print(f"→ 超出点数({n_exceed})略多于期望({expected_exceed})但统计不显著")
+    print("→ 无法拒绝零假设: 比赛波动可能只是随机因素和技术轮转的结果")
+    print("→ 没有足够的统计证据表明存在momentum效应")
+"""
 # 二项检验
 p_value = binomtest(n_exceed, n_points, p=0.05).pvalue
 print(f"超出点数: {n_exceed}/{n_points} (期望: {expected_exceed})")
@@ -511,7 +551,7 @@ if p_value < 0.05:
     print(f"→ {significance_level}: 比赛中的表现波动不是随机的")
 else:
     print("→ 结果不显著: 无法拒绝零假设，可能只是随机波动")
-
+"""
 # 9. 可视化结果
 print("步骤9: 生成可视化...")
 
@@ -618,6 +658,56 @@ plt.tight_layout()
 plt.savefig('match_flow_analysis_with_baseline.png', dpi=300, bbox_inches='tight')
 show_figure_nonblocking()
 
+# 9.7 完整模型特征重要性柱状图
+print("\n9.7 完整模型特征重要性分析")
+
+# 获取特征重要性
+importances = rf_model.feature_importances_
+indices = np.argsort(importances)[::-1]
+
+# 创建柱状图
+plt.figure(figsize=(12, 8))
+
+# 绘制特征重要性
+plt.barh(range(len(importances)), importances[indices], align='center', 
+         color='steelblue', edgecolor='black', alpha=0.8)
+
+# 设置y轴标签
+plt.yticks(range(len(importances)), [feature_cols[i] for i in indices], fontsize=10)
+plt.gca().invert_yaxis()  # 最重要的在顶部
+
+plt.xlabel('特征重要性', fontsize=12)
+plt.title(f'随机森林特征重要性 - {df["player1"].iloc[0]} vs {df["player2"].iloc[0]}', 
+          fontsize=14, fontweight='bold')
+plt.grid(True, alpha=0.3, axis='x')
+
+# 添加重要性数值
+for i, (importance, feature) in enumerate(zip(importances[indices], [feature_cols[i] for i in indices])):
+    plt.text(importance + 0.001, i, f'{importance:.4f}', va='center', fontsize=9)
+
+# 标注滞后特征
+lag_keywords = ['last', 'avg_', 'rate', 'lag']
+for i, feature in enumerate([feature_cols[i] for i in indices]):
+    if any(keyword in feature for keyword in lag_keywords):
+        plt.text(-0.01, i, '⚡', va='center', ha='right', color='red', fontsize=14)
+
+# 添加图例
+plt.text(0.02, 0.02, '⚡ 表示滞后特征（momentum相关）', 
+         transform=plt.gca().transAxes, fontsize=10, 
+         bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.3))
+
+plt.tight_layout()
+plt.savefig('rf_feature_importance_bar.png', dpi=300, bbox_inches='tight')
+show_figure_nonblocking()
+
+# 打印前10重要特征
+print("\n前10重要特征:")
+feature_importance_df = pd.DataFrame({
+    '特征': feature_cols,
+    '重要性': importances
+}).sort_values('重要性', ascending=False)
+
+print(feature_importance_df.head(10).to_string(index=False))
 # 10. 比赛流解读
 print("\n" + "="*60)
 print("比赛流分析结果解读")
